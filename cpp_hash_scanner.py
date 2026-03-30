@@ -50,11 +50,11 @@ KNOWN_LIBRARY_SIGNATURES = [
         "name": "openssl",
         "ecosystem": "OSS-Fuzz",
         "patterns": [
+            r'#\s*define\s+OPENSSL_VERSION_STR\s+"([0-9]+\.[0-9]+\.[0-9]+[a-z]?)',
             r'#\s*define\s+OPENSSL_VERSION_TEXT\s+"OpenSSL\s+([0-9]+\.[0-9]+\.[0-9]+[a-z]?)',
-            r'#\s*define\s+OPENSSL_VERSION_STR\s+"([0-9]+\.[0-9]+\.[0-9]+)',
-            r'#\s*define\s+SHLIB_VERSION_NUMBER\s+"([0-9]+\.[0-9]+)',
+            r'#\s*define\s+OPENSSL_VERSION_MAJOR\s+([0-9]+)', # 개별 매크로 조합은 추후 보강
         ],
-        "files": ["opensslv.h", "openssl/opensslv.h", "crypto/opensslv.h"],
+        "files": ["opensslv.h", "openssl/opensslv.h", "crypto/opensslv.h", "VERSION.dat"],
     },
     # zlib
     {
@@ -261,9 +261,32 @@ def identify_libraries(
     1. 각 파일의 SHA-256 해시 계산
     2. 알려진 라이브러리 시그니처 매칭
     """
-    file_hashes = []
-    identified = []
-    seen_libs = set()  # 중복 방지
+    # 0. 폴더명 기반 프로젝트 추론 (최상위 폴더 대상)
+    root_name = os.path.basename(scan_path.rstrip(os.sep))
+    # 패턴: 프로젝트명-1.2.3 또는 프로젝트명_1.2.3
+    ver_match = re.search(r'^([a-zA-Z0-9_\-]+)[-_vV]([0-9]+\.[0-9]+(?:\.[0-9]+)?(?:[a-z0-9\-\.]*))$', root_name)
+    if ver_match:
+        p_name = ver_match.group(1).lower()
+        p_ver = ver_match.group(2)
+        # 이미 알려진 라이브러리 목록에 있는지 확인
+        guessed_eco = ""
+        for lib_def in KNOWN_LIBRARY_SIGNATURES:
+            if lib_def["name"] == p_name or p_name.startswith(lib_def["name"]):
+                guessed_eco = lib_def["ecosystem"]
+                p_name = lib_def["name"]
+                break
+        
+        identified.append(IdentifiedLibrary(
+            name=p_name,
+            version=p_ver,
+            ecosystem=guessed_eco or "OSS-Fuzz", # C/C++ 기본
+            confidence="medium",
+            source_file="<directory_name>",
+            matched_pattern=root_name
+        ))
+        seen_libs.add(p_name)
+        if line_callback:
+            cb(f"  📂 폴더명에서 프로젝트 식별: {p_name} v{p_ver}")
 
     for dirpath, dirnames, filenames in os.walk(scan_path):
         # 제외 디렉토리
@@ -312,6 +335,34 @@ def identify_libraries(
                 is_target = not target_files or any(
                     rel_path.replace("\\", "/").endswith(tf) for tf in target_files
                 )
+
+                if is_target:
+                    # 특수 처리: OpenSSL 3.x 개별 매크로
+                    if lib_name == "openssl" and "MAJOR" in content:
+                        major = re.search(r'#\s*define\s+OPENSSL_VERSION_MAJOR\s+([0-9]+)', content)
+                        minor = re.search(r'#\s*define\s+OPENSSL_VERSION_MINOR\s+([0-9]+)', content)
+                        patch = re.search(r'#\s*define\s+OPENSSL_VERSION_PATCH\s+([0-9]+)', content)
+                        if major and minor and patch:
+                            v_str = f"{major.group(1)}.{minor.group(1)}.{patch.group(1)}"
+                            identified.append(IdentifiedLibrary(
+                                name=lib_name, version=v_str, ecosystem=lib_def["ecosystem"],
+                                confidence="high", source_file=rel_path, matched_pattern="macros"
+                            ))
+                            seen_libs.add(lib_name)
+                            if line_callback: cb(f"  🔍 {lib_name} v{v_str} 식별 (매크로 조합: {rel_path})")
+                            continue
+
+                    # 특수 처리: VERSION.dat (OpenSSL 등)
+                    if fname == "VERSION.dat":
+                        v_match = re.search(r'MAJOR=([0-9]+)\s+MINOR=([0-9]+)\s+PATCH=([0-9]+)', content)
+                        if v_match:
+                            v_str = f"{v_match.group(1)}.{v_match.group(2)}.{v_match.group(3)}"
+                            identified.append(IdentifiedLibrary(
+                                name=lib_name, version=v_str, ecosystem=lib_def["ecosystem"],
+                                confidence="high", source_file=rel_path, matched_pattern="VERSION.dat"
+                            ))
+                            seen_libs.add(lib_name)
+                            continue
 
                 for pattern in lib_def["patterns"]:
                     match = re.search(pattern, content)
