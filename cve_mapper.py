@@ -695,11 +695,10 @@ def run_grype(
             stdin=sbom_file,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
-            text=True,
+            text=False, # 바이너리 모드로 변경
             bufsize=1,
             shell=IS_WIN,
             env=grype_env,
-            encoding="utf-8", errors="replace",
         )
 
         # stderr 실시간 스트리밍 (별도 스레드)
