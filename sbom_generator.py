@@ -325,14 +325,19 @@ def generate_sbom(
         res = generate_sbom_cdxgen(target_path, output_dir, progress, line_callback)
         
         # Fallback 로직 강화: 
-        # 1. cdxgen이 실패했거나 (res.success=False)
-        # 2. 성공했으나 컴포넌트를 하나도 찾지 못한 경우
-        # syft가 사용 가능하다면 syft로 재시도합니다.
         if (not res.success or res.components_count == 0) and _find_tool("syft"):
             def _log(msg):
                 if progress: progress(msg)
             
-            reason = "컴포넌트를 찾지 못함" if res.success else "도구 실행 실패"
+            # 에러 요약 (ENOENT cargo 등 장황한 메시지 방어)
+            err_summary = ""
+            if not res.success and res.error:
+                if "ENOENT" in res.error:
+                    err_summary = " (환경 미비: 필요한 도구가 설치되지 않음)"
+                else:
+                    err_summary = f" ({res.error[:50]}...)"
+
+            reason = "컴포넌트를 찾지 못함" if res.success else f"도구 분석 실패{err_summary}"
             _log(f"  ⚠️ cdxgen이 {reason}. Syft로 재시도합니다...")
             
             res_syft = generate_sbom_syft(target_path, output_dir, "cyclonedx-json", progress, line_callback)

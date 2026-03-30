@@ -164,8 +164,9 @@ def _run_semgrep(
         "semgrep", "scan",
         "--config", config,
         "--json",
-        "--timeout", "300",
-        "--max-target-bytes", "5000000",
+        "--timeout", "600",
+        "--max-target-bytes", "10000000", # 10MB로 확대
+        "--no-git-ignore", # gitignore 무시 (Damn Vulnerable 프로젝트 등 의도적 취약점 탐색 시 필요)
         target_path,
     ]
 

@@ -890,20 +890,26 @@ def _compute_stats(result: CVEMapResult):
 def merge_cve_results(*results: CVEMapResult) -> CVEMapResult:
     """여러 CVE 매핑 결과를 병합 (중복 CVE 제거)"""
     merged = CVEMapResult(success=True, tool_used="merged")
-    seen_cves = set()
+    seen_keys = set()
 
     for r in results:
         if not r or not r.success:
             continue
         for v in r.vulns:
-            key = v.cve_id or f"{v.package_name}:{v.package_version}"
-            if key not in seen_cves:
-                seen_cves.add(key)
+            # 중복 제거 기준: CVE ID + 패키지명 (동일 CVE가 다른 패키지에서 발생할 수 있음)
+            key = f"{v.cve_id or 'no-id'}:{v.package_name or 'no-pkg'}"
+            if key not in seen_keys:
+                seen_keys.add(key)
                 merged.vulns.append(v)
         merged.duration += r.duration
 
     _compute_stats(merged)
-    merged.tool_used = " + ".join(r.tool_used for r in results if r and r.success)
+    # 중복 제거된 툴 이름 목록
+    used_tools = []
+    for r in results:
+        if r and r.success and r.tool_used not in used_tools:
+            used_tools.append(r.tool_used)
+    merged.tool_used = " + ".join(used_tools)
     return merged
 
 
