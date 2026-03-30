@@ -261,6 +261,10 @@ def identify_libraries(
     1. 각 파일의 SHA-256 해시 계산
     2. 알려진 라이브러리 시그니처 매칭
     """
+    file_hashes = []
+    identified = []
+    seen_libs = set()  # 중복 방지
+
     # 0. 폴더명 기반 프로젝트 추론 (최상위 폴더 대상)
     root_name = os.path.basename(scan_path.rstrip(os.sep))
     # 패턴: 프로젝트명-1.2.3 또는 프로젝트명_1.2.3
