@@ -1,0 +1,427 @@
+rules:
+  # ═══════════════════════════════════════
+  # C / C++ 보안 규칙
+  # ═══════════════════════════════════════
+
+  - id: c-buffer-overflow-gets
+    patterns:
+      - pattern: gets(...)
+    message: >
+      gets()는 버퍼 오버플로 취약점의 원인입니다. 입력 크기를 제한하지 않아
+      스택 기반 버퍼 오버플로가 발생할 수 있습니다. fgets()로 교체하세요.
+    severity: ERROR
+    languages: [c, cpp]
+    metadata:
+      cwe: ["CWE-120: Buffer Copy without Checking Size of Input"]
+      owasp: ["A03:2021 - Injection"]
+      references: ["https://cwe.mitre.org/data/definitions/120.html"]
+
+  - id: c-buffer-overflow-strcpy
+    patterns:
+      - pattern: strcpy($DST, $SRC)
+    message: >
+      strcpy()는 대상 버퍼 크기를 확인하지 않아 버퍼 오버플로가 발생할 수 있습니다.
+      strncpy() 또는 strlcpy()를 사용하세요.
+    severity: WARNING
+    languages: [c, cpp]
+    metadata:
+      cwe: ["CWE-120: Buffer Copy without Checking Size of Input"]
+
+  - id: c-buffer-overflow-strcat
+    patterns:
+      - pattern: strcat($DST, $SRC)
+    message: >
+      strcat()는 대상 버퍼 크기를 확인하지 않아 버퍼 오버플로가 발생할 수 있습니다.
+      strncat()을 사용하세요.
+    severity: WARNING
+    languages: [c, cpp]
+    metadata:
+      cwe: ["CWE-120: Buffer Copy without Checking Size of Input"]
+
+  - id: c-buffer-overflow-sprintf
+    patterns:
+      - pattern: sprintf($BUF, ...)
+    message: >
+      sprintf()는 출력 크기를 제한하지 않아 버퍼 오버플로가 발생할 수 있습니다.
+      snprintf()를 사용하세요.
+    severity: WARNING
+    languages: [c, cpp]
+    metadata:
+      cwe: ["CWE-120: Buffer Copy without Checking Size of Input"]
+
+  - id: c-format-string-printf
+    patterns:
+      - pattern: printf($VAR)
+      - pattern-not: printf("...")
+    message: >
+      사용자 입력이 printf의 포맷 문자열로 직접 전달되면 포맷 스트링 공격이
+      가능합니다. printf("%s", var) 형태로 사용하세요.
+    severity: ERROR
+    languages: [c, cpp]
+    metadata:
+      cwe: ["CWE-134: Use of Externally-Controlled Format String"]
+
+  - id: c-dangerous-system
+    patterns:
+      - pattern: system($CMD)
+    message: >
+      system()은 쉘 명령 인젝션에 취약합니다. 사용자 입력이 포함되면
+      임의 명령이 실행될 수 있습니다. exec 계열 함수 사용을 고려하세요.
+    severity: WARNING
+    languages: [c, cpp]
+    metadata:
+      cwe: ["CWE-78: OS Command Injection"]
+      owasp: ["A03:2021 - Injection"]
+
+  - id: c-use-after-free-pattern
+    patterns:
+      - pattern: |
+          free($PTR);
+          ...
+          $PTR[$IDX]
+    message: >
+      free() 후 해당 포인터를 사용하는 Use-After-Free 패턴이 감지되었습니다.
+      free() 후 포인터를 NULL로 설정하세요.
+    severity: ERROR
+    languages: [c, cpp]
+    metadata:
+      cwe: ["CWE-416: Use After Free"]
+
+  - id: c-integer-overflow-malloc
+    patterns:
+      - pattern: malloc($SIZE * $COUNT)
+    message: >
+      malloc()의 인자에서 정수 오버플로가 발생할 수 있습니다.
+      calloc($COUNT, $SIZE)를 사용하거나 오버플로 검사를 추가하세요.
+    severity: WARNING
+    languages: [c, cpp]
+    metadata:
+      cwe: ["CWE-190: Integer Overflow"]
+
+  - id: c-dangerous-scanf
+    patterns:
+      - pattern: scanf("%s", ...)
+    message: >
+      scanf("%s")는 입력 길이를 제한하지 않아 버퍼 오버플로가 발생합니다.
+      scanf("%Ns", buf) 형태로 최대 길이를 지정하거나 fgets()를 사용하세요.
+    severity: ERROR
+    languages: [c, cpp]
+    metadata:
+      cwe: ["CWE-120: Buffer Copy without Checking Size of Input"]
+
+  - id: c-dangerous-memcpy
+    patterns:
+      - pattern: memcpy($DST, $SRC, strlen($SRC))
+    message: >
+      memcpy에서 strlen 결과를 직접 사용하면 null terminator가 복사되지 않아
+      문자열 처리 오류가 발생할 수 있습니다. strlen() + 1을 사용하세요.
+    severity: WARNING
+    languages: [c, cpp]
+    metadata:
+      cwe: ["CWE-131: Incorrect Calculation of Buffer Size"]
+
+  # ═══════════════════════════════════════
+  # JavaScript / TypeScript 보안 규칙
+  # ═══════════════════════════════════════
+
+  - id: js-eval-injection
+    patterns:
+      - pattern: eval($CODE)
+    message: >
+      eval()은 코드 인젝션 공격에 취약합니다. 사용자 입력이 포함되면
+      임의 코드가 실행될 수 있습니다. JSON.parse() 등 안전한 대안을 사용하세요.
+    severity: ERROR
+    languages: [javascript, typescript]
+    metadata:
+      cwe: ["CWE-94: Code Injection"]
+      owasp: ["A03:2021 - Injection"]
+
+  - id: js-xss-innerhtml
+    patterns:
+      - pattern: $EL.innerHTML = $DATA
+    message: >
+      innerHTML에 사용자 입력을 직접 할당하면 XSS(크로스 사이트 스크립팅) 공격이
+      가능합니다. textContent 또는 DOMPurify.sanitize()를 사용하세요.
+    severity: ERROR
+    languages: [javascript, typescript]
+    metadata:
+      cwe: ["CWE-79: Cross-site Scripting"]
+      owasp: ["A03:2021 - Injection"]
+
+  - id: js-sql-injection
+    patterns:
+      - pattern: $DB.query("..." + $INPUT + "...")
+      - pattern: $DB.query(`...${$INPUT}...`)
+    message: >
+      SQL 쿼리에 문자열 연결을 사용하면 SQL 인젝션에 취약합니다.
+      Parameterized query(바인드 변수)를 사용하세요.
+    severity: ERROR
+    languages: [javascript, typescript]
+    metadata:
+      cwe: ["CWE-89: SQL Injection"]
+      owasp: ["A03:2021 - Injection"]
+
+  - id: js-hardcoded-secret
+    patterns:
+      - pattern: |
+          $KEY = "..."
+      - metavariable-regex:
+          metavariable: $KEY
+          regex: (?i)(password|secret|api_key|apikey|token|private_key|auth)
+    message: >
+      소스코드에 비밀번호/API 키가 하드코딩되어 있습니다.
+      환경변수 또는 시크릿 관리 도구를 사용하세요.
+    severity: WARNING
+    languages: [javascript, typescript]
+    metadata:
+      cwe: ["CWE-798: Hard-coded Credentials"]
+
+  - id: js-command-injection
+    patterns:
+      - pattern: require('child_process').exec($CMD)
+      - pattern: child_process.exec($CMD)
+    message: >
+      child_process.exec()는 쉘을 통해 실행되어 명령 인젝션에 취약합니다.
+      execFile()을 사용하세요.
+    severity: ERROR
+    languages: [javascript, typescript]
+    metadata:
+      cwe: ["CWE-78: OS Command Injection"]
+
+  - id: js-path-traversal
+    patterns:
+      - pattern: $FS.readFile($PATH + $INPUT, ...)
+      - pattern: $FS.readFileSync($PATH + $INPUT, ...)
+    message: >
+      파일 경로에 사용자 입력을 직접 연결하면 경로 탐색 공격이 가능합니다.
+      path.resolve()와 입력 검증을 사용하세요.
+    severity: ERROR
+    languages: [javascript, typescript]
+    metadata:
+      cwe: ["CWE-22: Path Traversal"]
+
+  # ═══════════════════════════════════════
+  # Python 보안 규칙
+  # ═══════════════════════════════════════
+
+  - id: py-eval-injection
+    patterns:
+      - pattern: eval($CODE)
+    message: >
+      eval()은 코드 인젝션 공격에 취약합니다. ast.literal_eval() 또는
+      안전한 파서를 사용하세요.
+    severity: ERROR
+    languages: [python]
+    metadata:
+      cwe: ["CWE-94: Code Injection"]
+
+  - id: py-sql-injection
+    patterns:
+      - pattern: $CURSOR.execute("..." + $INPUT + "...")
+      - pattern: $CURSOR.execute(f"...{$INPUT}...")
+      - pattern: $CURSOR.execute("...%s..." % $INPUT)
+    message: >
+      SQL 쿼리에 문자열 포맷팅을 사용하면 SQL 인젝션에 취약합니다.
+      Parameterized query를 사용하세요: cursor.execute("SELECT * FROM t WHERE id=?", (id,))
+    severity: ERROR
+    languages: [python]
+    metadata:
+      cwe: ["CWE-89: SQL Injection"]
+      owasp: ["A03:2021 - Injection"]
+
+  - id: py-command-injection
+    patterns:
+      - pattern: os.system($CMD)
+      - pattern: os.popen($CMD)
+    message: >
+      os.system()/os.popen()은 쉘 인젝션에 취약합니다.
+      subprocess.run()을 shell=False로 사용하세요.
+    severity: ERROR
+    languages: [python]
+    metadata:
+      cwe: ["CWE-78: OS Command Injection"]
+
+  - id: py-subprocess-shell
+    patterns:
+      - pattern: subprocess.run(..., shell=True, ...)
+      - pattern: subprocess.call(..., shell=True, ...)
+      - pattern: subprocess.Popen(..., shell=True, ...)
+    message: >
+      subprocess에서 shell=True는 쉘 인젝션에 취약합니다.
+      사용자 입력이 포함되지 않는지 확인하거나 shell=False를 사용하세요.
+    severity: WARNING
+    languages: [python]
+    metadata:
+      cwe: ["CWE-78: OS Command Injection"]
+
+  - id: py-pickle-deserialization
+    patterns:
+      - pattern: pickle.loads($DATA)
+      - pattern: pickle.load($FILE)
+    message: >
+      pickle 역직렬화는 임의 코드 실행이 가능한 심각한 취약점입니다.
+      신뢰할 수 없는 데이터에 pickle을 사용하지 마세요. JSON을 사용하세요.
+    severity: ERROR
+    languages: [python]
+    metadata:
+      cwe: ["CWE-502: Deserialization of Untrusted Data"]
+
+  - id: py-hardcoded-password
+    patterns:
+      - pattern: |
+          $KEY = "..."
+      - metavariable-regex:
+          metavariable: $KEY
+          regex: (?i)(password|passwd|secret|api_key|apikey|token|private_key)
+    message: >
+      소스코드에 비밀번호/시크릿이 하드코딩되어 있습니다.
+      환경변수 또는 시크릿 관리 도구를 사용하세요.
+    severity: WARNING
+    languages: [python]
+    metadata:
+      cwe: ["CWE-798: Hard-coded Credentials"]
+
+  - id: py-weak-hash
+    patterns:
+      - pattern: hashlib.md5(...)
+      - pattern: hashlib.sha1(...)
+    message: >
+      MD5/SHA1은 암호학적으로 안전하지 않습니다. 비밀번호 해싱에는
+      bcrypt/scrypt/argon2를, 일반 해싱에는 SHA-256 이상을 사용하세요.
+    severity: WARNING
+    languages: [python]
+    metadata:
+      cwe: ["CWE-328: Use of Weak Hash"]
+
+  - id: py-debug-true
+    patterns:
+      - pattern: DEBUG = True
+      - pattern: app.run(..., debug=True, ...)
+    message: >
+      프로덕션 환경에서 DEBUG=True는 민감한 정보를 노출할 수 있습니다.
+      배포 시 반드시 False로 설정하세요.
+    severity: WARNING
+    languages: [python]
+    metadata:
+      cwe: ["CWE-215: Information Exposure Through Debug Information"]
+
+  # ═══════════════════════════════════════
+  # Java 보안 규칙
+  # ═══════════════════════════════════════
+
+  - id: java-sql-injection
+    patterns:
+      - pattern: $STMT.executeQuery("..." + $INPUT + "...")
+      - pattern: $STMT.execute("..." + $INPUT + "...")
+    message: >
+      SQL 쿼리에 문자열 연결을 사용하면 SQL 인젝션에 취약합니다.
+      PreparedStatement를 사용하세요.
+    severity: ERROR
+    languages: [java]
+    metadata:
+      cwe: ["CWE-89: SQL Injection"]
+      owasp: ["A03:2021 - Injection"]
+
+  - id: java-xxe
+    patterns:
+      - pattern: DocumentBuilderFactory.newInstance()
+    message: >
+      XML 파서 기본 설정은 XXE(XML External Entity) 공격에 취약합니다.
+      setFeature("http://apache.org/xml/features/disallow-doctype-decl", true)를 설정하세요.
+    severity: WARNING
+    languages: [java]
+    metadata:
+      cwe: ["CWE-611: XML External Entity"]
+
+  - id: java-deserialization
+    patterns:
+      - pattern: new ObjectInputStream(...)
+    message: >
+      Java ObjectInputStream은 역직렬화 공격에 취약합니다.
+      신뢰할 수 없는 데이터의 역직렬화를 피하세요.
+    severity: ERROR
+    languages: [java]
+    metadata:
+      cwe: ["CWE-502: Deserialization of Untrusted Data"]
+
+  # ═══════════════════════════════════════
+  # Go 보안 규칙
+  # ═══════════════════════════════════════
+
+  - id: go-sql-injection
+    patterns:
+      - pattern: $DB.Query("..." + $INPUT + "...")
+      - pattern: $DB.Exec("..." + $INPUT + "...")
+      - pattern: $DB.Query(fmt.Sprintf("...", $INPUT))
+    message: >
+      SQL 쿼리에 문자열 연결/포맷팅을 사용하면 SQL 인젝션에 취약합니다.
+      Parameterized query를 사용하세요: db.Query("SELECT * FROM t WHERE id=$1", id)
+    severity: ERROR
+    languages: [go]
+    metadata:
+      cwe: ["CWE-89: SQL Injection"]
+
+  - id: go-command-injection
+    patterns:
+      - pattern: exec.Command("sh", "-c", $CMD)
+      - pattern: exec.Command("bash", "-c", $CMD)
+      - pattern: exec.Command("cmd", "/c", $CMD)
+    message: >
+      쉘을 통한 명령 실행은 명령 인젝션에 취약합니다.
+      사용자 입력이 포함되지 않도록 하거나, 직접 실행하세요.
+    severity: ERROR
+    languages: [go]
+    metadata:
+      cwe: ["CWE-78: OS Command Injection"]
+
+  # ═══════════════════════════════════════
+  # PHP 보안 규칙
+  # ═══════════════════════════════════════
+
+  - id: php-sql-injection
+    patterns:
+      - pattern: mysqli_query($CONN, "..." . $INPUT . "...")
+      - pattern: $PDO->query("..." . $INPUT . "...")
+    message: >
+      SQL 쿼리에 문자열 연결을 사용하면 SQL 인젝션에 취약합니다.
+      Prepared statement를 사용하세요.
+    severity: ERROR
+    languages: [php]
+    metadata:
+      cwe: ["CWE-89: SQL Injection"]
+
+  - id: php-command-injection
+    patterns:
+      - pattern: shell_exec($CMD)
+      - pattern: exec($CMD)
+      - pattern: passthru($CMD)
+    message: >
+      shell_exec/exec/passthru는 명령 인젝션에 취약합니다.
+      escapeshellarg()로 인자를 이스케이프하세요.
+    severity: ERROR
+    languages: [php]
+    metadata:
+      cwe: ["CWE-78: OS Command Injection"]
+
+  # ═══════════════════════════════════════
+  # Ruby 보안 규칙
+  # ═══════════════════════════════════════
+
+  - id: ruby-command-injection
+    pattern: system($CMD)
+    message: >
+      system()에 사용자 입력이 포함되면 명령 인젝션이 가능합니다.
+      배열 형태 system("cmd", arg1, arg2)를 사용하세요.
+    severity: WARNING
+    languages: [ruby]
+    metadata:
+      cwe: ["CWE-78: OS Command Injection"]
+
+  - id: ruby-eval
+    pattern: eval($CODE)
+    message: >
+      eval()은 코드 인젝션에 취약합니다. 사용자 입력에 eval을 사용하지 마세요.
+    severity: ERROR
+    languages: [ruby]
+    metadata:
+      cwe: ["CWE-94: Code Injection"]
