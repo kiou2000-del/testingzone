@@ -5,6 +5,7 @@ Syft, cdxgen, osv-scanner, dep-scan 설치 상태 확인 및 설치 가이드 �
 import shutil
 import subprocess
 import platform
+import os
 from dataclasses import dataclass
 from typing import Optional
 
@@ -89,9 +90,25 @@ def check_tool(name: str) -> ToolStatus:
         install_guide=info.get("install_cmd", ""),
     )
 
-    # Windows에서 .cmd/.bat 확장자 포함 검색
+    # 1. 시스템 PATH 확인
     path = shutil.which(cmd)
-    if not path and platform.system() == "Windows":
+    
+    # 2. 로컬 tools/ 폴더 확인
+    if not path:
+        app_dir = os.path.dirname(os.path.abspath(__file__))
+        local_tools_dir = os.path.join(app_dir, "tools")
+        if os.path.isdir(local_tools_dir):
+            exts = [""]
+            if system == "Windows":
+                exts = [".exe", ".cmd", ".bat"]
+            for ext in exts:
+                target = os.path.join(local_tools_dir, cmd + ext)
+                if os.path.isfile(target):
+                    path = target
+                    break
+
+    # 3. Windows 추가 확장자 시도 (시스템 PATH용)
+    if not path and system == "Windows":
         for ext in [".cmd", ".exe", ".bat"]:
             path = shutil.which(cmd + ext)
             if path:

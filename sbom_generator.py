@@ -37,15 +37,23 @@ class SBOMResult:
 def _run_cmd(cmd: list, timeout=600, cwd=None, line_callback=None) -> subprocess.CompletedProcess:
     """
     Windows/Linux 호환 subprocess 실행.
-    line_callback이 주어지면 Popen으로 한 줄씩 실시간 스트리밍합니다.
+    로컬 tools 폴더를 PATH에 추가하여 실행합니다.
     """
+    # 환경변수 보강: 로컬 tools 폴더 추가
+    env = os.environ.copy()
+    app_dir = os.path.dirname(os.path.abspath(__file__))
+    local_tools_dir = os.path.join(app_dir, "tools")
+    if os.path.isdir(local_tools_dir):
+        sep = ";" if IS_WINDOWS else ":"
+        env["PATH"] = local_tools_dir + sep + env.get("PATH", "")
+
     if line_callback:
         # 실시간 스트리밍 모드
         try:
             proc = subprocess.Popen(
                 cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                 text=True, bufsize=1, cwd=cwd, shell=IS_WINDOWS,
-                encoding="utf-8", errors="replace",
+                env=env, encoding="utf-8", errors="replace",
             )
             out_lines = []
             for raw_line in proc.stdout:
@@ -72,6 +80,7 @@ def _run_cmd(cmd: list, timeout=600, cwd=None, line_callback=None) -> subprocess
             text=True,
             timeout=timeout,
             cwd=cwd,
+            env=env,
             shell=IS_WINDOWS,
             encoding="utf-8", errors="replace",
         )
@@ -85,11 +94,28 @@ def _run_cmd(cmd: list, timeout=600, cwd=None, line_callback=None) -> subprocess
 
 
 def _find_tool(name: str) -> Optional[str]:
-    """도구 실행 경로 찾기 (Windows .cmd/.exe 포함)"""
+    """도구 실행 경로 찾기 (시스템 PATH + 로컬 tools/ 폴더)"""
+    # 1. 시스템 PATH 확인
     path = shutil.which(name)
     if path:
         return path
-    # Windows: .cmd 확장자 명시 시도
+    
+    # 2. 로컬 tools/ 폴더 확인
+    app_dir = os.path.dirname(os.path.abspath(__file__))
+    local_tools_dir = os.path.join(app_dir, "tools")
+    
+    if os.path.isdir(local_tools_dir):
+        # 가능한 확장자 목록
+        exts = [""]
+        if IS_WINDOWS:
+            exts = [".exe", ".cmd", ".bat"]
+        
+        for ext in exts:
+            target = os.path.join(local_tools_dir, name + ext)
+            if os.path.isfile(target):
+                return target
+
+    # 3. Windows 추가 확장자 시도 (시스템 PATH용)
     if IS_WINDOWS:
         for ext in [".cmd", ".exe", ".bat"]:
             path = shutil.which(name + ext)
@@ -196,7 +222,8 @@ def generate_sbom_cdxgen(
         output_dir = tempfile.mkdtemp(prefix="sbom_out_")
 
     out_path = os.path.join(output_dir, "sbom.cdx.json")
-    cmd = ["cdxgen", "-o", out_path, "--format", "json", target_path]
+    # --deep: 딥 스캔 활성화, --evidence: 증거 기반 분석 (매니페스트가 없을 때 유용)
+    cmd = ["cdxgen", "-o", out_path, "--format", "json", "--deep", "--evidence", target_path]
     log(f"  📋 명령: {' '.join(cmd)}")
 
     import time
@@ -207,7 +234,7 @@ def generate_sbom_cdxgen(
         proc = _run_cmd(cmd, timeout=600, cwd=work_dir or None, line_callback=line_callback)
         result.duration = time.time() - t0
 
-        if os.path.isfile(out_path):
+        if os.path.isfile(out_path) and os.path.getsize(out_path) > 0:
             with open(out_path, "r", encoding="utf-8") as f:
                 content = f.read()
             try:
@@ -218,10 +245,17 @@ def generate_sbom_cdxgen(
                 result.components_count = _count_components(result.sbom_json)
                 log(f"  ✅ cdxgen 완료: {result.components_count}개 컴포넌트 ({result.duration:.1f}초)")
             except json.JSONDecodeError:
-                result.error = "cdxgen 출력이 유효한 JSON이 아닙니다"
+                # 파일은 있으나 JSON이 아닌 경우 (에러 메시지 등이 담겼을 수 있음)
+                if not result.success:
+                    result.error = "cdxgen 출력이 유효한 JSON이 아닙니다"
         else:
+            # 파일이 없는 경우에만 에러로 처리
             err = proc.stderr.strip() or proc.stdout.strip() or "출력 파일 없음"
-            result.error = f"cdxgen 실행 실패: {err[:300]}"
+            # 단순 경고(Notice)만 있는 경우는 에러 메시지에서 제외하거나 필터링 시도
+            if "Notice:" in err and not result.success:
+                result.error = f"cdxgen 실행 중 경고 발생 (결과 파일 없음): {err[:200]}"
+            else:
+                result.error = f"cdxgen 실행 실패: {err[:300]}"
             log(f"  ❌ {result.error}")
 
     except FileNotFoundError as e:
@@ -288,7 +322,31 @@ def generate_sbom(
     if tool == "syft":
         return generate_sbom_syft(target_path, output_dir, "cyclonedx-json", progress, line_callback)
     elif tool == "cdxgen":
-        return generate_sbom_cdxgen(target_path, output_dir, progress, line_callback)
+        res = generate_sbom_cdxgen(target_path, output_dir, progress, line_callback)
+        
+        # Fallback 로직 강화: 
+        # 1. cdxgen이 실패했거나 (res.success=False)
+        # 2. 성공했으나 컴포넌트를 하나도 찾지 못한 경우
+        # syft가 사용 가능하다면 syft로 재시도합니다.
+        if (not res.success or res.components_count == 0) and _find_tool("syft"):
+            def _log(msg):
+                if progress: progress(msg)
+            
+            reason = "컴포넌트를 찾지 못함" if res.success else "도구 실행 실패"
+            _log(f"  ⚠️ cdxgen이 {reason}. Syft로 재시도합니다...")
+            
+            res_syft = generate_sbom_syft(target_path, output_dir, "cyclonedx-json", progress, line_callback)
+            
+            if res_syft.success:
+                if res_syft.components_count > 0:
+                    _log(f"  ✨ Syft가 {res_syft.components_count}개의 컴포넌트를 탐지하는 데 성공했습니다!")
+                    return res_syft
+                else:
+                    _log("  ⚠️ Syft로도 컴포넌트를 찾지 못했습니다.")
+            else:
+                _log(f"  ❌ Syft 재시도 실패: {res_syft.error}")
+        
+        return res
     else:
         r = SBOMResult()
         r.error = f"알 수 없는 도구: {tool}"

@@ -1,0 +1,14 @@
+__pycache__/
+*.pyc
+tools/
+!tools/CHANGELOG.md
+!tools/versions.json
+node_modules/
+venv/
+.env
+output/
+saves/
+project_all.zip
+*.tmp
+.streamlit/
+.vscode/

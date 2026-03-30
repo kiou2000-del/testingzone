@@ -21,8 +21,24 @@ import shutil
 import urllib.request
 import ssl
 import time
+import subprocess
 from dataclasses import dataclass, field
 from typing import Callable, Optional, List
+
+# ─────────────────────────────────────────
+# 플랫폼 감지
+# ─────────────────────────────────────────
+import platform
+_SYSTEM = platform.system().lower()  # windows, linux, darwin
+_MACHINE = platform.machine().lower() # x86_64, aarch64, arm64, amd64
+
+# 표준화된 아키텍처 이름
+if _MACHINE in ("x86_64", "amd64"):
+    _ARCH = "amd64"
+elif _MACHINE in ("aarch64", "arm64"):
+    _ARCH = "arm64"
+else:
+    _ARCH = _MACHINE
 
 # ─────────────────────────────────────────
 # 설정
@@ -34,45 +50,46 @@ VERSIONS_FILE = os.path.join(TOOLS_DIR, "versions.json")
 USER_AGENT = "SBOM-Generator/2.1"
 
 # 도구 정의: GitHub 저장소, 에셋 패턴, 로컬 파일명
+# {os} {arch} {ver} {ext} 로 치환 가능하게 설정
 TOOL_DEFS = {
     "syft": {
         "owner": "anchore",
         "repo": "syft",
-        "local_exe": "syft.exe",
+        "local_exe": "syft.exe" if _SYSTEM == "windows" else "syft",
         "purpose": "바이너리 SBOM 생성",
-        "asset_type": "zip",
-        "asset_pattern": "syft_{ver}_windows_amd64.zip",
+        "asset_type": "zip" if _SYSTEM == "windows" else "tar.gz",
+        "asset_pattern": "syft_{ver}_{os}_{arch}.{ext}",
         "version_cmd": ["syft", "version"],
-        "install_mode": "github",        # github 에서 바이너리 다운로드
+        "install_mode": "github",
     },
     "cdxgen": {
         "owner": "cdxgen",
         "repo": "cdxgen",
-        "local_exe": "cdxgen.exe",
+        "local_exe": "cdxgen.exe" if _SYSTEM == "windows" else "cdxgen",
         "purpose": "소스코드 SBOM 생성",
         "asset_type": "exe",
-        "asset_pattern": "cdxgen-windows-amd64",
+        "asset_pattern": "cdxgen-{os}-{arch}" if _SYSTEM == "windows" else "cdxgen-{os}-{arch}",
         "version_cmd": ["cdxgen", "--version"],
-        "install_mode": "npm_or_github",  # Node.js 있으면 npm, 없으면 github exe
+        "install_mode": "npm_or_github",
         "npm_package": "@cyclonedx/cdxgen",
     },
     "osv-scanner": {
         "owner": "google",
         "repo": "osv-scanner",
-        "local_exe": "osv-scanner.exe",
+        "local_exe": "osv-scanner.exe" if _SYSTEM == "windows" else "osv-scanner",
         "purpose": "CVE 매핑 (Google OSV)",
         "asset_type": "exe",
-        "asset_pattern": "osv-scanner_windows_amd64.exe",
+        "asset_pattern": "osv-scanner_{ver}_{os}_{arch}" if _SYSTEM == "linux" else "osv-scanner_{os}_{arch}.exe",
         "version_cmd": ["osv-scanner", "version"],
         "install_mode": "github",
     },
     "grype": {
         "owner": "anchore",
         "repo": "grype",
-        "local_exe": "grype.exe",
+        "local_exe": "grype.exe" if _SYSTEM == "windows" else "grype",
         "purpose": "CVE 매핑 (Anchore, SBOM 네이티브)",
-        "asset_type": "zip",
-        "asset_pattern": "grype_{ver}_windows_amd64.zip",
+        "asset_type": "zip" if _SYSTEM == "windows" else "tar.gz",
+        "asset_pattern": "grype_{ver}_{os}_{arch}.{ext}",
         "version_cmd": ["grype", "version"],
         "install_mode": "github",
     },
@@ -134,37 +151,39 @@ def _make_ssl_context():
 def _github_latest_release(owner: str, repo: str) -> dict:
     """
     GitHub API에서 최신 릴리즈 정보를 가져옵니다.
-    반환: {"tag_name": "v1.2.3", "assets": [{"name": "...", "browser_download_url": "..."}]}
     """
     url = f"https://api.github.com/repos/{owner}/{repo}/releases/latest"
     req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
     ctx = _make_ssl_context()
-    with urllib.request.urlopen(req, context=ctx, timeout=30) as resp:
+    # 타임아웃을 10초로 제한하여 무한 대기 방지
+    with urllib.request.urlopen(req, context=ctx, timeout=10) as resp:
         return json.loads(resp.read().decode())
 
 
 def _find_asset_url(release: dict, pattern: str, tag: str) -> str:
     """릴리즈 에셋 목록에서 패턴에 맞는 다운로드 URL 찾기"""
     ver = tag.lstrip("v")
-    target = pattern.replace("{ver}", ver)
+    ext = "zip" if _SYSTEM == "windows" else "tar.gz"
+    
+    # 패턴 치환
+    target = pattern.format(ver=ver, os=_SYSTEM, arch=_ARCH, ext=ext)
 
     for asset in release.get("assets", []):
         name = asset.get("name", "")
         if name == target or target in name:
             return asset.get("browser_download_url", "")
 
-    # 정확한 매칭 실패 시 부분 매칭
+    # 부분 매칭 (패턴 치환 실패 시 대비)
     for asset in release.get("assets", []):
         name = asset.get("name", "").lower()
-        if "windows" in name and "amd64" in name:
-            # exe 혹은 zip 매칭
-            if pattern.endswith(".zip") and name.endswith(".zip"):
-                return asset.get("browser_download_url", "")
-            if pattern.endswith(".exe") and name.endswith(".exe"):
-                return asset.get("browser_download_url", "")
-            # cdxgen은 확장자 없이 배포될 수 있음
-            if "cdxgen" in name and "windows" in name and "amd64" in name:
-                return asset.get("browser_download_url", "")
+        if _SYSTEM in name and _ARCH in name:
+            # 확장자 체크
+            if _SYSTEM == "windows":
+                if name.endswith(".zip") or name.endswith(".exe"):
+                    return asset.get("browser_download_url", "")
+            else:
+                if name.endswith(".tar.gz") or name.endswith(".tgz") or ("linux" in name and _ARCH in name):
+                    return asset.get("browser_download_url", "")
 
     return ""
 
@@ -216,51 +235,78 @@ def _download_file(url: str, dest: str, desc: str = "",
         return False
 
 
-def _download_and_extract_zip(url: str, dest_exe: str, desc: str = "",
-                              line_cb: Optional[Callable] = None) -> bool:
-    """ZIP 다운로드 후 exe 추출"""
-    zip_path = dest_exe + ".tmp.zip"
-    if not _download_file(url, zip_path, desc, line_cb):
+def _download_and_extract_archive(url: str, dest_exe: str, desc: str = "",
+                                 line_cb: Optional[Callable] = None) -> bool:
+    """ZIP 또는 tar.gz 다운로드 후 exe 추출"""
+    is_zip = url.lower().endswith(".zip")
+    ext = ".zip" if is_zip else ".tar.gz"
+    tmp_path = dest_exe + ".tmp" + ext
+    
+    if not _download_file(url, tmp_path, desc, line_cb):
         return False
 
     try:
         if line_cb:
-            line_cb(f"  📦 압축 해제 중...")
-        with zipfile.ZipFile(zip_path, "r") as zf:
-            zf.extractall(os.path.dirname(dest_exe))
-        os.remove(zip_path)
+            line_cb(f"  📦 압축 해제 중 ({ext})...")
+            
+        if is_zip:
+            with zipfile.ZipFile(tmp_path, "r") as zf:
+                zf.extractall(os.path.dirname(dest_exe))
+        else:
+            import tarfile
+            with tarfile.open(tmp_path, "r:gz") as tf:
+                tf.extractall(os.path.dirname(dest_exe))
+        
+        os.remove(tmp_path)
 
+        # 추출된 파일 중 실행 파일 찾기
         if os.path.isfile(dest_exe):
+            _set_executable(dest_exe)
             if line_cb:
                 line_cb(f"  ✅ {os.path.basename(dest_exe)} 추출 완료")
             return True
         else:
-            # ZIP 안에 이름이 다를 수 있음 — exe 찾기
+            # 이름이 다를 수 있음 — 검색
             parent = os.path.dirname(dest_exe)
+            base_name = os.path.basename(dest_exe).split(".")[0].lower()
             for f in os.listdir(parent):
-                if f.endswith(".exe") and f != os.path.basename(dest_exe):
+                f_lower = f.lower()
+                if base_name in f_lower and (f_lower == base_name or f_lower.endswith(".exe")):
                     src = os.path.join(parent, f)
-                    if os.path.basename(dest_exe).split(".")[0].lower() in f.lower():
+                    if src != dest_exe:
+                        if os.path.exists(dest_exe): os.remove(dest_exe)
                         shutil.move(src, dest_exe)
-                        if line_cb:
-                            line_cb(f"  ✅ {f} → {os.path.basename(dest_exe)}")
-                        return True
-            if line_cb:
-                line_cb(f"  ❌ ZIP에서 exe를 찾을 수 없음")
+                    _set_executable(dest_exe)
+                    if line_cb:
+                        line_cb(f"  ✅ {f} → {os.path.basename(dest_exe)}")
+                    return True
             return False
 
     except Exception as e:
         if line_cb:
             line_cb(f"  ❌ 압축 해제 실패: {e}")
-        if os.path.isfile(zip_path):
-            os.remove(zip_path)
+        if os.path.isfile(tmp_path):
+            os.remove(tmp_path)
         return False
+
+
+def _set_executable(path: str):
+    """Linux/Mac에서 실행 권한 부여"""
+    if _SYSTEM != "windows" and os.path.isfile(path):
+        try:
+            st = os.stat(path)
+            os.chmod(path, st.st_mode | 0o111)
+        except Exception:
+            pass
 
 
 def _download_exe(url: str, dest_exe: str, desc: str = "",
                   line_cb: Optional[Callable] = None) -> bool:
-    """EXE 직접 다운로드"""
-    return _download_file(url, dest_exe, desc, line_cb)
+    """EXE 직접 다운로드 및 권한 설정"""
+    ok = _download_file(url, dest_exe, desc, line_cb)
+    if ok:
+        _set_executable(dest_exe)
+    return ok
 
 
 # ─────────────────────────────────────────
@@ -544,8 +590,8 @@ def check_and_update_tools(
                 pass
 
         # 다운로드 실행
-        if tdef["asset_type"] == "zip":
-            ok = _download_and_extract_zip(
+        if tdef["asset_type"] in ("zip", "tar.gz"):
+            ok = _download_and_extract_archive(
                 asset_url, local_exe,
                 f"{tool_name} {info.latest_version}",
                 line_cb=cb,
@@ -581,24 +627,62 @@ def check_and_update_tools(
         result.tools.append(info)
         cb("")
 
-    # 결과 요약
+    # 결과 요약 및 정리
     result.duration = time.time() - t0
     result.all_ok = all(
         (t.installed and not t.error) or t.skipped
         for t in result.tools
     )
 
+    # ─────────────────────────────────────────
+    # 불필요한 플랫폼 파일 정리 (.exe 등)
+    # ─────────────────────────────────────────
+    if _SYSTEM != "windows":
+        for f in os.listdir(TOOLS_DIR):
+            if f.endswith(".exe"):
+                try:
+                    os.remove(os.path.join(TOOLS_DIR, f))
+                except Exception:
+                    pass
+
     cb("── 업데이트 결과 ─────────────────────────")
     for t in result.tools:
-        if t.downloaded:
-            cb(f"  🆕 {t.name}: {t.latest_version} (신규 다운로드)")
-        elif t.skipped and t.installed:
-            ver = t.local_version or t.latest_version
-            cb(f"  ✅ {t.name}: {ver} (최신)")
-        elif t.error:
-            cb(f"  ❌ {t.name}: {t.error}")
+        status_icon = "🆕" if t.downloaded else "✅"
+        if t.error:
+            status_icon = "❌"
+            cb(f"  {status_icon} {t.name}: {t.error}")
         else:
-            cb(f"  ⚠️  {t.name}: 상태 불명")
+            ver = t.local_version or t.latest_version
+            # 실제 작동 테스트
+            try:
+                # 전체 경로 결정
+                local_exe_name = tdef.get("local_exe", t.name)
+                full_path = os.path.join(TOOLS_DIR, local_exe_name)
+                if not os.path.isfile(full_path):
+                    # npm 설치 등의 경우 PATH에서 찾음
+                    full_path = t.name
+                
+                # PATH 보강 (테스트용)
+                test_env = os.environ.copy()
+                sep = ";" if _SYSTEM == "windows" else ":"
+                test_env["PATH"] = TOOLS_DIR + sep + test_env.get("PATH", "")
+                
+                cmd = [full_path, "version"] if t.name != "cdxgen" else [full_path, "--version"]
+                res = subprocess.run(
+                    cmd, capture_output=True, timeout=10, 
+                    shell=(_SYSTEM == "windows"), env=test_env,
+                    text=True, errors="replace"
+                )
+                
+                # exit code가 0이 아니어도 출력에 버전/도구 이름이 있으면 성공으로 간주 (일부 도구 특성)
+                output = (res.stdout + res.stderr).lower()
+                if res.returncode == 0 or t.name in output or "version" in output:
+                    cb(f"  {status_icon} {t.name}: {ver} (정상 작동)")
+                else:
+                    cb(f"  ⚠️  {t.name}: {ver} (설치됨, 테스트 응답 이상)")
+            except Exception as e:
+                cb(f"  ⚠️  {t.name}: {ver} (설치됨, 실행 테스트 실패: {str(e)[:50]})")
+    
     cb(f"  ⏱️  소요 시간: {result.duration:.1f}초")
     cb("")
 

@@ -180,9 +180,8 @@ def _run_semgrep(
         cmd,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
-        text=True, bufsize=1,
+        text=False,  # 바이너리 모드로 읽음
         shell=IS_WIN,
-        encoding="utf-8", errors="replace",
     )
 
     stderr_lines = []
@@ -200,21 +199,27 @@ def _run_semgrep(
     timer.start()
 
     def _read_stderr():
+        # 바이너리로 읽어서 수동 디코딩
         for raw in proc.stderr:
-            raw = raw.rstrip("\n\r")
-            if raw:
-                stderr_lines.append(raw)
-                if line_callback:
-                    line_callback(raw)
+            try:
+                line = raw.decode("utf-8", errors="replace").rstrip("\n\r")
+                if line:
+                    stderr_lines.append(line)
+                    if line_callback:
+                        line_callback(line)
+            except Exception:
+                pass
 
     t = threading.Thread(target=_read_stderr, daemon=True)
     t.start()
 
-    stdout_data = proc.stdout.read()
+    stdout_raw = proc.stdout.read()
     proc.wait(timeout=timeout + 10)
     t.join(timeout=5)
     timer.cancel()
 
+    # stdout 결과도 수동 디코딩
+    stdout_data = stdout_raw.decode("utf-8", errors="replace")
     return stdout_data, "\n".join(stderr_lines), proc.returncode or 0, timed_out
 
 

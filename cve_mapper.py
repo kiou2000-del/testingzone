@@ -27,32 +27,20 @@ def _run_with_timeout(
 ) -> tuple:
     """
     Popen 기반 실행: 실시간 스트리밍 + 진짜 타임아웃.
-
-    Args:
-        cmd: 실행할 명령어
-        timeout: 초 단위 타임아웃
-        line_callback: stderr/stdout 라인 콜백
-        env: 환경변수
-        capture_stdout: True면 stdout을 캡처(JSON)하고 stderr만 스트리밍
-                       False면 stdout+stderr 합쳐서 스트리밍
-
-    Returns:
-        (stdout_text, stderr_text, returncode, timed_out)
     """
+    # 윈도우 인코딩 문제를 피하기 위해 바이너리 모드 사용 권장
     if capture_stdout:
         proc = subprocess.Popen(
             cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-            text=True, bufsize=1, shell=IS_WIN, env=env,
-            encoding="utf-8", errors="replace",
+            text=False, shell=IS_WIN, env=env,
         )
     else:
         proc = subprocess.Popen(
             cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-            text=True, bufsize=1, shell=IS_WIN, env=env,
-            encoding="utf-8", errors="replace",
+            text=False, shell=IS_WIN, env=env,
         )
 
-    stdout_lines = []
+    stdout_bytes = []
     stderr_lines = []
     timed_out = False
 
@@ -69,31 +57,36 @@ def _run_with_timeout(
 
     try:
         if capture_stdout:
-            # stderr 실시간 스트리밍 (별도 스레드), stdout 캡처
+            # stderr 실시간 스트리밍
             def _read_stderr():
-                for line in proc.stderr:
-                    line = line.rstrip("\n\r")
-                    if line:
-                        stderr_lines.append(line)
-                        if line_callback:
-                            line_callback(line)
+                for line_b in proc.stderr:
+                    try:
+                        line = line_b.decode("utf-8", errors="replace").rstrip("\n\r")
+                        if line:
+                            stderr_lines.append(line)
+                            if line_callback:
+                                line_callback(line)
+                    except Exception:
+                        pass
 
             t = threading.Thread(target=_read_stderr, daemon=True)
             t.start()
 
             # stdout 읽기 (메인 스레드)
-            for line in proc.stdout:
-                stdout_lines.append(line.rstrip("\n\r"))
-
+            stdout_bytes = proc.stdout.read()
             t.join(timeout=5)
         else:
             # stdout+stderr 합쳐서 실시간 스트리밍
-            for line in proc.stdout:
-                line = line.rstrip("\n\r")
-                if line:
-                    stdout_lines.append(line)
-                    if line_callback:
-                        line_callback(line)
+            for line_b in proc.stdout:
+                try:
+                    line = line_b.decode("utf-8", errors="replace").rstrip("\n\r")
+                    if line:
+                        stdout_bytes.append(line_b) # 원본 보관 (필요시)
+                        stderr_lines.append(line) # 로그용
+                        if line_callback:
+                            line_callback(line)
+                except Exception:
+                    pass
 
         proc.wait(timeout=10)
     except Exception:
@@ -102,8 +95,16 @@ def _run_with_timeout(
         timer.cancel()
 
     rc = proc.returncode if proc.returncode is not None else -1
+    
+    stdout_text = ""
+    if capture_stdout:
+        stdout_text = stdout_bytes.decode("utf-8", errors="replace")
+    else:
+        # 합쳐진 경우 stderr_lines가 전체 텍스트
+        stdout_text = "\n".join(stderr_lines)
+
     return (
-        "\n".join(stdout_lines),
+        stdout_text,
         "\n".join(stderr_lines),
         rc,
         timed_out,
@@ -144,6 +145,27 @@ class CVEMapResult:
     output_path: str = ""
 
 
+def _find_tool(name: str) -> Optional[str]:
+    """도구 실행 경로 찾기 (시스템 PATH + 로컬 tools/ 폴더)"""
+    path = shutil.which(name)
+    if path:
+        return path
+    
+    # 로컬 tools/ 폴더 확인
+    app_dir = os.path.dirname(os.path.abspath(__file__))
+    local_tools_dir = os.path.join(app_dir, "tools")
+    
+    if os.path.isdir(local_tools_dir):
+        exts = [""]
+        if IS_WIN:
+            exts = [".exe", ".cmd", ".bat"]
+        for ext in exts:
+            target = os.path.join(local_tools_dir, name + ext)
+            if os.path.isfile(target):
+                return target
+    return None
+
+
 # ─────────────────────────────────────────
 # osv-scanner
 # ─────────────────────────────────────────
@@ -157,24 +179,11 @@ def run_osv_scanner(
 ) -> CVEMapResult:
     """
     osv-scanner로 CVE 매핑.
-
-    전략:
-      1차: Lock 파일 직접 타겟 스캔 (--lockfile) — 가장 정확하고 안정적
-      2차: SBOM 파일 기반 스캔 (-L) — 1차 실패 또는 scan_path 미제공 시
-
-    Args:
-        sbom_path: SBOM JSON 파일 경로
-        progress: 진행 콜백
-        line_callback: 실시간 출력 콜백
-        timeout: 초 단위 타임아웃 (기본 10분)
-        scan_path: 프로젝트 원본 디렉토리 경로 (있으면 lock 파일 직접 스캔 우선)
-
-    Returns:
-        CVEMapResult
     """
     result = CVEMapResult(tool_used="osv-scanner")
+    exe = _find_tool("osv-scanner")
 
-    if not shutil.which("osv-scanner"):
+    if not exe:
         result.error = "osv-scanner가 설치되어 있지 않습니다."
         return result
 
@@ -257,22 +266,31 @@ def run_osv_scanner(
                 if line_callback:
                     line_callback(f"    📄 {rel_lf}")
 
-            cmd_lock = ["osv-scanner", "scan", "--format", "json"]
+            cmd_lock = [exe, "scan", "--format", "json"]
             for lf in lockfiles:
                 cmd_lock.extend(["--lockfile", lf])
 
             if line_callback:
                 if len(lockfiles) > 3:
-                    line_callback(f"$ osv-scanner scan --format json --lockfile <{len(lockfiles)}개 파일>")
+                    line_callback(f"$ {os.path.basename(exe)} scan --format json --lockfile <{len(lockfiles)}개 파일>")
                 else:
                     line_callback(f"$ {' '.join(cmd_lock)}")
                 line_callback(f"  ⏱️ 타임아웃: {timeout}초")
 
             try:
+                # 환경변수 보강
+                env = os.environ.copy()
+                app_dir = os.path.dirname(os.path.abspath(__file__))
+                local_tools_dir = os.path.join(app_dir, "tools")
+                if os.path.isdir(local_tools_dir):
+                    sep = ";" if IS_WIN else ":"
+                    env["PATH"] = local_tools_dir + sep + env.get("PATH", "")
+
                 stdout, stderr_text, rc, was_timeout = _run_with_timeout(
                     cmd_lock, timeout=timeout,
                     line_callback=line_callback,
                     capture_stdout=True,
+                    env=env,
                 )
 
                 if was_timeout:
@@ -305,18 +323,27 @@ def run_osv_scanner(
     # 주의: -L은 lockfile 전용, SBOM에는 --sbom 사용해야 함
     if not result.success and sbom_path and os.path.isfile(sbom_path):
         # v2: scan --sbom path, v1: --sbom path
-        cmd_v2 = ["osv-scanner", "scan", "--sbom", sbom_path, "--format", "json"]
-        cmd_v1 = ["osv-scanner", "--format", "json", "--sbom", sbom_path]
+        cmd_v2 = [exe, "scan", "--sbom", sbom_path, "--format", "json"]
+        cmd_v1 = [exe, "--format", "json", "--sbom", sbom_path]
 
         log(f"  📄 SBOM 파일 기반 스캔 (fallback)")
         if line_callback:
             line_callback(f"$ {' '.join(cmd_v2)}")
 
         try:
+            # 환경변수 보강
+            env = os.environ.copy()
+            app_dir = os.path.dirname(os.path.abspath(__file__))
+            local_tools_dir = os.path.join(app_dir, "tools")
+            if os.path.isdir(local_tools_dir):
+                sep = ";" if IS_WIN else ":"
+                env["PATH"] = local_tools_dir + sep + env.get("PATH", "")
+
             stdout, stderr_text, rc, was_timeout = _run_with_timeout(
                 cmd_v2, timeout=timeout,
                 line_callback=line_callback,
                 capture_stdout=True,
+                env=env,
             )
 
             if was_timeout:
@@ -442,19 +469,11 @@ def run_depscan(
 ) -> CVEMapResult:
     """
     OWASP dep-scan으로 CVE 매핑
-
-    Args:
-        sbom_path: SBOM 파일 경로 (BOM 입력)
-        target_path: 프로젝트 경로 (직접 스캔)
-        progress: 진행 콜백
-        line_callback: 실시간 출력 콜백
-
-    Returns:
-        CVEMapResult
     """
     result = CVEMapResult(tool_used="depscan")
+    exe = _find_tool("depscan")
 
-    if not shutil.which("depscan"):
+    if not exe:
         result.error = "depscan이 설치되어 있지 않습니다. pip install owasp-depscan"
         return result
 
@@ -473,7 +492,7 @@ def run_depscan(
     out_dir = tempfile.mkdtemp(prefix="depscan_out_")
 
     # dep-scan 명령 구성
-    cmd = ["depscan"]
+    cmd = [exe]
     if sbom_path:
         cmd.extend(["--bom", sbom_path])
     elif target_path:
@@ -490,13 +509,19 @@ def run_depscan(
     t0 = time.time()
 
     try:
-        dep_env = os.environ.copy()
+        # 환경변수 보강
+        env = os.environ.copy()
+        app_dir = os.path.dirname(os.path.abspath(__file__))
+        local_tools_dir = os.path.join(app_dir, "tools")
+        if os.path.isdir(local_tools_dir):
+            sep = ";" if IS_WIN else ":"
+            env["PATH"] = local_tools_dir + sep + env.get("PATH", "")
 
         # _run_with_timeout: stdout+stderr 합쳐서 실시간 스트리밍 + 타임아웃
         stdout_text, _, rc, was_timeout = _run_with_timeout(
             cmd, timeout=600,
             line_callback=line_callback,
-            env=dep_env,
+            env=env,
             capture_stdout=False,  # 결과는 파일로 저장되므로 합쳐서 스트리밍
         )
 
@@ -604,18 +629,11 @@ def run_grype(
 ) -> CVEMapResult:
     """
     Grype로 SBOM 파일의 CVE 매핑.
-
-    Windows 호환 전략:
-      - sbom:C:\\path 는 콜론 충돌 → stdin 파이프 방식 사용
-      - DB 만료 시 GRYPE_DB_VALIDATE_AGE=false로 강제 사용
-      - grype db update 선행 실행
-
-    명령: type sbom.cdx.json | grype -o json (Windows)
-          cat sbom.cdx.json | grype -o json  (Linux/Mac)
     """
     result = CVEMapResult(tool_used="grype")
+    exe = _find_tool("grype")
 
-    if not shutil.which("grype"):
+    if not exe:
         result.error = "grype가 설치되어 있지 않습니다."
         return result
 
@@ -634,12 +652,19 @@ def run_grype(
     grype_env["GRYPE_DB_AUTO_UPDATE"] = "true"
     grype_env["GRYPE_DB_VALIDATE_AGE"] = "false"  # 오래된 DB라도 강제 사용
 
+    # 로컬 tools/ 폴더 추가
+    app_dir = os.path.dirname(os.path.abspath(__file__))
+    local_tools_dir = os.path.join(app_dir, "tools")
+    if os.path.isdir(local_tools_dir):
+        sep = ";" if IS_WIN else ":"
+        grype_env["PATH"] = local_tools_dir + sep + grype_env.get("PATH", "")
+
     # 1단계: VDB 업데이트 시도
     if line_callback:
         line_callback("  📥 취약점 DB 최신화 중 (grype db update)...")
     try:
         db_stdout, db_stderr, db_rc, db_timeout = _run_with_timeout(
-            ["grype", "db", "update"], timeout=120,
+            [exe, "db", "update"], timeout=120,
             line_callback=line_callback, capture_stdout=False, env=grype_env,
         )
         if db_rc == 0:
@@ -652,9 +677,8 @@ def run_grype(
         if line_callback:
             line_callback(f"  ⚠️ DB 업데이트 오류: {e} — 기존 DB로 진행")
 
-    # 2단계: SBOM 스캔 (stdin 파이프 방식 — Windows 경로 콜론 충돌 회피)
-    # grype는 stdin으로 SBOM을 받을 수 있음: cat sbom.json | grype -o json
-    cmd = ["grype", "-o", "json"]
+    # 2단계: SBOM 스캔 (stdin 파이프 방식)
+    cmd = [exe, "-o", "json"]
     if line_callback:
         line_callback(f"$ [stdin pipe] {sbom_path} → grype -o json")
         line_callback(f"  ⏱️ 타임아웃: {timeout}초")
@@ -704,8 +728,8 @@ def run_grype(
         stderr_thread = threading.Thread(target=_read_stderr, daemon=True)
         stderr_thread.start()
 
-        # stdout 읽기 (JSON 결과)
-        stdout_data = proc.stdout.read()
+        # stdout 읽기 (JSON 결과 - 바이너리로 읽음)
+        stdout_raw = proc.stdout.read()
         proc.wait(timeout=timeout + 10)
         stderr_thread.join(timeout=5)
         timer.cancel()
@@ -718,7 +742,8 @@ def run_grype(
             return result
 
         result.duration = time.time() - t0
-        output = stdout_data.strip()
+        # 수동 디코딩 (errors="replace")
+        output = stdout_raw.decode("utf-8", errors="replace").strip()
         result.raw_output = output
         stderr_text = "\n".join(stderr_lines)
 

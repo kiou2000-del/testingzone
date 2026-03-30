@@ -164,10 +164,19 @@ def detect_input_type(path: str, max_scan: int = 5000) -> DetectionResult:
 
     # 판정
     total = result.binary_files + result.source_files
+    
+    # 개선: 인식 가능한 확장자가 없더라도 파일이 있다면 source로 간주하여 시도
+    if total == 0 and scanned > 0:
+        result.input_type = "source"
+        result.confidence = 0.1
+        result.recommended_tool = "cdxgen"
+        result.details = f"알 수 없는 파일 {scanned}개 발견 (소스코드로 가정하여 분석 시도)"
+        return result
+    
     if total == 0:
         result.input_type = "unknown"
         result.confidence = 0.0
-        result.details = "인식 가능한 파일을 찾지 못했습니다."
+        result.details = "분석할 파일을 찾지 못했습니다."
         return result
 
     binary_ratio = result.binary_files / total if total > 0 else 0
@@ -181,9 +190,10 @@ def detect_input_type(path: str, max_scan: int = 5000) -> DetectionResult:
     elif binary_ratio < 0.3:
         result.input_type = "source"
         result.confidence = 1 - binary_ratio
+        # 매니페스트가 없으면 cdxgen의 탐지력이 떨어질 수 있으므로 세부 정보에 표시
+        m_info = f", 매니페스트 {result.manifest_files}개" if result.manifest_files > 0 else " (매니페스트 없음)"
         result.recommended_tool = "cdxgen"
-        result.details = (f"소스코드 프로젝트 (소스 {result.source_files}개, "
-                          f"매니페스트 {result.manifest_files}개)")
+        result.details = (f"소스코드 프로젝트 (소스 {result.source_files}개{m_info})")
     else:
         result.input_type = "mixed"
         result.confidence = 0.5
