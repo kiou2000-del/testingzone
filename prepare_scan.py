@@ -77,6 +77,10 @@ MANIFEST_DEFS = [
     ("Podfile.lock",         "swift_pod_lock","Swift (CocoaPods lock)",  True),
     ("Podfile",              "swift_pod",    "Swift (CocoaPods)",        False),
     ("Package.resolved",     "swift_spm_lock","Swift (SPM lock)",       True),
+    # ── C / C++ (Build Interception) ──
+    ("Makefile",             "cpp_make",     "C/C++ (Makefile)",         False),
+    ("CMakeLists.txt",       "cpp_cmake",    "C/C++ (CMake)",            False),
+    ("configure",            "cpp_configure","C/C++ (Configure)",        False),
 ]
 
 # 같은 디렉토리에서 lock이 있으면 매니페스트 건너뛰기 위한 매핑
@@ -447,14 +451,47 @@ def _install_one(manifest, logs, line_callback=None, npm_env=None):
         ir.success = (rc == 0)
         ir.message = "pod install 완료" if ir.success else f"실패 (exit {rc})"
 
-    elif mtype == "swift_spm_lock":
-        # Package.resolved는 lock 파일이므로 그대로 스캔에 활용
+    elif mtype == "cpp_cmake":
+        # CMake는 컴파일 데이터베이스를 쉽게 생성 가능
+        if not check_tool_available("cmake"):
+            ir.message = "cmake 미설치 — 건너뜀"; return ir
+        cmd = ["cmake", "-DCMAKE_EXPORT_COMPILE_COMMANDS=ON", "."]
+        ir.command_used = " ".join(cmd)
+        rc, _, _ = _run_command_streaming(cmd, mdir, logs, line_callback)
+        ir.success = (rc == 0)
+        if ir.success:
+            ir.message = "compile_commands.json 생성 완료 (CMake)"
+        else:
+            ir.message = f"CMake 설정 실패 (exit {rc})"
+
+    elif mtype == "cpp_make":
+        # Makefile은 compiledb 또는 bear가 필요함
+        tool = None
+        if check_tool_available("compiledb"): tool = "compiledb"
+        elif check_tool_available("bear"): tool = "bear"
+        
+        if tool == "compiledb":
+            cmd = ["compiledb", "-n", "make"] # -n: 실제 빌드 없이 정보만 추출 시도
+            ir.command_used = " ".join(cmd)
+            rc, _, _ = _run_command_streaming(cmd, mdir, logs, line_callback)
+            ir.success = (rc == 0)
+            ir.message = "compile_commands.json 추출 완료 (compiledb)" if ir.success else "추출 실패"
+        elif tool == "bear":
+            cmd = ["bear", "--", "make", "-n"]
+            ir.command_used = " ".join(cmd)
+            rc, _, _ = _run_command_streaming(cmd, mdir, logs, line_callback)
+            ir.success = (rc == 0)
+            ir.message = "compile_commands.json 추출 완료 (bear)" if ir.success else "추출 실패"
+        else:
+            ir.message = "compiledb/bear 미설치 — 빌드 가로채기 건너뜀 (C++ 정밀분석 제한)"
+            ir.success = True # 에러는 아니므로 계속 진행
+
+    elif mtype == "cpp_configure":
+        ir.message = "configure 확인 완료 — 빌드 전 설정 파일 탐지됨"
         ir.success = True
-        ir.message = "SPM lock 파일 확인 완료 (스캔에 활용)"
 
     else:
         ir.message = f"알 수 없는 타입: {mtype} — 건너뜀"
-        ir.success = True
 
     return ir
 

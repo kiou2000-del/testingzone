@@ -222,8 +222,17 @@ def generate_sbom_cdxgen(
         output_dir = tempfile.mkdtemp(prefix="sbom_out_")
 
     out_path = os.path.join(output_dir, "sbom.cdx.json")
-    # --deep: 딥 스캔 활성화, --evidence: 증거 기반 분석 (매니페스트가 없을 때 유용)
-    cmd = ["cdxgen", "-o", out_path, "--format", "json", "--deep", "--evidence", target_path]
+    # --deep: 딥 스캔 활성화, --evidence: 증거 기반 분석
+    cmd = ["cdxgen", "-o", out_path, "--format", "json", "--deep", "--evidence"]
+    
+    # C/C++ 빌드 정보(compile_commands.json)가 있는지 확인
+    work_dir = target_path if os.path.isdir(target_path) else os.path.dirname(target_path)
+    compile_db = os.path.join(work_dir, "compile_commands.json")
+    if os.path.isfile(compile_db):
+        log(f"  ✨ 컴파일 데이터베이스 발견: {compile_db}")
+        # cdxgen은 인자로 경로를 받을 때 해당 폴더의 compile_commands.json을 참고함
+    
+    cmd.append(target_path)
     log(f"  📋 명령: {' '.join(cmd)}")
 
     import time
