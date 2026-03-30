@@ -583,6 +583,21 @@ if start_scan:
 
         cpp_result = scan_cpp_hashes(scan_path, line_callback=live_line)
 
+        if cpp_result.identified_libs:
+            # 식별된 라이브러리를 SBOM 컴포넌트 목록에 추가 (UI 표시용)
+            for lib in cpp_result.identified_libs:
+                # 중복 확인 후 추가
+                exists = any(c.get("name") == lib.name for c in components)
+                if not exists:
+                    components.append({
+                        "name": lib.name,
+                        "version": lib.version,
+                        "ecosystem": "C/C++ (Hash)",
+                        "purl": f"pkg:generic/{lib.name}@{lib.version}",
+                        "path": lib.matched_file
+                    })
+            log(f"[C/C++ 해시] {len(cpp_result.identified_libs)}개 라이브러리 식별 및 SBOM 추가")
+
         if cpp_result.osv_results:
             from cve_mapper import CVEMapResult, _compute_stats
             cpp_cve = CVEMapResult(tool_used="osv-hash", success=True)
@@ -592,8 +607,7 @@ if start_scan:
             cve_results.append(cpp_cve)
             log(f"[C/C++ 해시] {cpp_cve.total_vulns}건 ({cpp_cve.duration:.1f}초)")
         else:
-            log(f"[C/C++ 해시] 식별된 라이브러리: {len(cpp_result.identified_libs)}개, "
-                f"파일 해시: {len(cpp_result.file_hashes)}개 ({cpp_result.duration:.1f}초)")
+            log(f"[C/C++ 해시] 파일 해시: {len(cpp_result.file_hashes)}개 분석 완료")
 
     # ── STEP 4: SAST 정적 분석 (Semgrep) ──
     sast_result = None
