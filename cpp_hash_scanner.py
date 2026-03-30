@@ -261,6 +261,10 @@ def identify_libraries(
     1. 각 파일의 SHA-256 해시 계산
     2. 알려진 라이브러리 시그니처 매칭
     """
+    def cb(msg):
+        if line_callback:
+            line_callback(msg)
+
     file_hashes = []
     identified = []
     seen_libs = set()  # 중복 방지
