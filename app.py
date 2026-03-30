@@ -594,7 +594,7 @@ if start_scan:
                         "version": lib.version,
                         "ecosystem": "C/C++ (Hash)",
                         "purl": f"pkg:generic/{lib.name}@{lib.version}",
-                        "path": lib.matched_file
+                        "path": lib.source_file
                     })
             log(f"[C/C++ 해시] {len(cpp_result.identified_libs)}개 라이브러리 식별 및 SBOM 추가")
 
