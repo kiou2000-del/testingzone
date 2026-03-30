@@ -343,14 +343,17 @@ def generate_sbom(
             res_syft = generate_sbom_syft(target_path, output_dir, "cyclonedx-json", progress, line_callback)
             
             if res_syft.success:
+                # Syft 실행 자체가 성공했다면, 컴포넌트가 0개라도 성공으로 반환
+                # 그래야 Step 3-B(C++ 해시 스캔) 등 후속 단계가 진행됨
                 if res_syft.components_count > 0:
                     _log(f"  ✨ Syft가 {res_syft.components_count}개의 컴포넌트를 탐지하는 데 성공했습니다!")
-                    return res_syft
                 else:
-                    _log("  ⚠️ Syft로도 컴포넌트를 찾지 못했습니다.")
+                    _log("  ℹ️ Syft 분석 완료 (탐지된 외부 라이브러리 없음)")
+                return res_syft
             else:
                 _log(f"  ❌ Syft 재시도 실패: {res_syft.error}")
         
+        # Fallback이 없거나 실패한 경우에도, cdxgen 실행 자체는 성공했다면 반환
         return res
     else:
         r = SBOMResult()
